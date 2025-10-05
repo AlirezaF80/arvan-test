@@ -1,81 +1,89 @@
 import requests
 from bs4 import BeautifulSoup
 import hashlib
-import time
 import os
+import smtplib
+from email.mime.text import MIMEText
+from email.header import Header
 
-# --- تنظیمات ---
+# --- تنظیمات اصلی ---
 # آدرس سایتی که می‌خواهید چک کنید
-URL_TO_MONITOR = 'https://grad.kntu.ac.ir/' 
+URL_TO_CHECK = 'https://grad.kntu.ac.ir' 
+# نام فایلی برای ذخیره آخرین وضعیت سایت
+HASH_FILE = 'last_hash.txt'
 
-# هر چند ثانیه یک بار سایت چک شود؟ (مثلاً 3600 برای هر ساعت)
-CHECK_INTERVAL_SECONDS = 300
+# --- تنظیمات ایمیل (این مقادیر از Environment Variables خوانده می‌شوند) ---
+SMTP_SERVER = os.environ.get('SMTP_SERVER') # مثلا: 'smtp.gmail.com'
+SMTP_PORT = int(os.environ.get('SMTP_PORT', 587))
+SENDER_EMAIL = os.environ.get('SENDER_EMAIL')
+SENDER_PASSWORD = os.environ.get('SENDER_PASSWORD') # پسورد ایمیل یا App Password
+RECIPIENT_EMAIL = os.environ.get('RECIPIENT_EMAIL')
 
-# اطلاعات ربات تلگرام (این‌ها را از بخش Secrets پلتفرم پارس‌پک وارد می‌کنیم)
-BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
-
-def send_telegram_message(message):
-    """یک پیام به تلگرام ارسال می‌کند."""
-    if not BOT_TOKEN or not CHAT_ID:
-        print("اطلاعات توکن ربات یا چت آیدی تلگرام تنظیم نشده است.")
+def send_notification_email(subject, body):
+    """تابعی برای ارسال ایمیل نوتیفیکیشن"""
+    if not all([SMTP_SERVER, SMTP_PORT, SENDER_EMAIL, SENDER_PASSWORD, RECIPIENT_EMAIL]):
+        print("خطا: متغیرهای محیطی برای ارسال ایمیل به درستی تنظیم نشده‌اند.")
         return
-        
-    api_url = f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage'
-    payload = {'chat_id': CHAT_ID, 'text': message}
-    
-    try:
-        response = requests.post(api_url, data=payload)
-        if response.status_code == 200:
-            print("پیام با موفقیت به تلگرام ارسال شد.")
-        else:
-            print(f"ارسال پیام به تلگرام با خطا مواجه شد: {response.text}")
-    except Exception as e:
-        print(f"خطا در اتصال به API تلگرام: {e}")
 
+    try:
+        msg = MIMEText(body, 'plain', 'utf-8')
+        msg['Subject'] = Header(subject, 'utf-8')
+        msg['From'] = SENDER_EMAIL
+        msg['To'] = RECIPIENT_EMAIL
+
+        print("در حال اتصال به سرور SMTP...")
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()  # فعال‌سازی امنیت
+        server.login(SENDER_EMAIL, SENDER_PASSWORD)
+        print("لاگین موفقیت‌آمیز بود.")
+        
+        server.sendmail(SENDER_EMAIL, [RECIPIENT_EMAIL], msg.as_string())
+        print(f"ایمیل با موفقیت به {RECIPIENT_EMAIL} ارسال شد.")
+        server.quit()
+    except Exception as e:
+        print(f"خطا در ارسال ایمیل: {e}")
 
 def get_page_hash():
-    """محتوای صفحه وب را گرفته و هش (hash) آن را برمی‌گرداند."""
+    """محتوای سایت را گرفته و یک هش از آن برمی‌گرداند"""
     try:
-        response = requests.get(URL_TO_MONITOR, timeout=15)
-        response.raise_for_status() # اگر درخواست ناموفق بود، خطا ایجاد می‌کند
-        
-        # برای دقت بیشتر، می‌توانیم فقط بخش خاصی از سایت را هش کنیم
+        response = requests.get(URL_TO_CHECK, timeout=15)
+        response.raise_for_status()
+        # برای دقت بیشتر، می‌توانید فقط بخش خاصی از صفحه را هش کنید
         # soup = BeautifulSoup(response.text, 'html.parser')
-        # main_content = soup.find('main') # برای مثال تگ main
-        # if main_content:
-        #     return hashlib.sha256(main_content.encode('utf-8')).hexdigest()
-        
+        # content = soup.find('main').encode('utf-8')
         return hashlib.sha256(response.content).hexdigest()
-
-    except requests.exceptions.RequestException as e:
+    except requests.RequestException as e:
         print(f"خطا در دریافت محتوای سایت: {e}")
         return None
 
-# --- حلقه اصلی برنامه ---
-if __name__ == "__main__":
-    print(f"اسکریپت مانیتورینگ برای سایت {URL_TO_MONITOR} شروع به کار کرد.")
-    send_telegram_message("ربات مانیتورینگ با موفقیت فعال شد.")
+def main():
+    print("شروع بررسی سایت...")
     
-    current_hash = get_page_hash()
-    if current_hash:
-        print("هش اولیه سایت با موفقیت دریافت شد.")
-    else:
-        print("هشدار: دریافت هش اولیه ناموفق بود. برنامه بعد از وقفه زمانی دوباره تلاش خواهد کرد.")
+    # خواندن هش قبلی از فایل
+    try:
+        with open(HASH_FILE, 'r') as f:
+            last_hash = f.read().strip()
+    except FileNotFoundError:
+        last_hash = None
+        print("فایل هش پیدا نشد، برای اولین بار اجرا می‌شود.")
 
-    while True:
-        # منتظر ماندن برای بازه زمانی مشخص شده
-        print(f"در حال انتظار برای {CHECK_INTERVAL_SECONDS} ثانیه...")
-        time.sleep(CHECK_INTERVAL_SECONDS)
+    new_hash = get_page_hash()
+
+    if new_hash and new_hash != last_hash:
+        print(f"تغییر شناسایی شد! هش جدید: {new_hash}")
+        # ارسال ایمیل
+        subject = f"تغییر در سایت {URL_TO_CHECK}"
+        body = f"سایت مورد نظر شما آپدیت شده است.\n\nآدرس سایت: {URL_TO_CHECK}"
+        send_notification_email(subject, body)
         
-        print("زمان بررسی مجدد فرا رسید. در حال دریافت هش جدید...")
-        new_hash = get_page_hash()
-        
-        if new_hash and new_hash != current_hash:
-            print("تغییر در سایت شناسایی شد!")
-            send_telegram_message(f"توجه: سایت {URL_TO_MONITOR} آپدیت شد!")
-            current_hash = new_hash # هش جدید را به عنوان هش فعلی ذخیره کن
-        elif new_hash is None:
-             print("هش جدید دریافت نشد. بررسی بعدی طبق زمانبندی انجام خواهد شد.")
-        else:
-            print("تغییری در سایت مشاهده نشد.")
+        # ذخیره هش جدید در فایل
+        with open(HASH_FILE, 'w') as f:
+            f.write(new_hash)
+            
+    elif not new_hash:
+        print("هش جدید دریافت نشد. بررسی ناموفق بود.")
+    else:
+        print("هیچ تغییری یافت نشد.")
+
+if __name__ == "__main__":
+    main()
